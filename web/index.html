@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeAI Shared Desktop</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10151f; color: #edf3ff; }
+    body { max-width: 1080px; margin: 0 auto; padding: 28px 18px 48px; }
+    h1 { margin-bottom: 4px; } .lead { color: #aab9d3; margin-top: 0; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+    section { background: #192231; border: 1px solid #30415d; border-radius: 12px; padding: 18px; }
+    textarea, input { box-sizing: border-box; width: 100%; background: #0d131d; color: #edf3ff; border: 1px solid #506484; border-radius: 7px; padding: 10px; font: 14px ui-monospace, Consolas, monospace; }
+    textarea { min-height: 140px; resize: vertical; } button { cursor: pointer; margin-top: 10px; margin-right: 8px; border: 0; border-radius: 7px; padding: 9px 13px; font-weight: 650; background: #78a7ff; color: #061326; }
+    button.danger { background: #ff8585; } code, pre { background: #0d131d; border-radius: 7px; padding: 10px; overflow: auto; } pre { white-space: pre-wrap; min-height: 80px; }
+    .armed { color: #74e6a2; } .disarmed { color: #ff9b9b; } small { color: #aab9d3; }
+    .screen-wrap { position: relative; border: 1px solid #506484; border-radius: 8px; overflow: hidden; background: #0d131d; }
+    .screen-wrap img { display: block; width: 100%; height: auto; }
+    .overlay { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #ffcc00; border-radius: 50%; box-shadow: 0 0 0 1px #061326; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <h1>NeAI Shared Desktop</h1>
+  <p class="lead">人間と NeAI が同じ画面を共有します。NeAI は共有画面を見ながら実マウスカーソルを動かし、人間も引き続き操作できます。</p>
+  <section>
+    <h2>共有画面</h2>
+    <p><small><code>/api/session</code> と <code>/api/screen</code> で NeAI も同じデスクトップを取得します。座標はこの共有画面のピクセル空間です。</small></p>
+    <div class="screen-wrap">
+      <img id="screen" alt="共有デスクトップ">
+      <div id="cursor-dot" class="overlay" hidden></div>
+    </div>
+    <pre id="session-meta">読み込み中...</pre>
+  </section>
+  <section>
+    <h2>状態: <span id="armed" class="disarmed">読み込み中</span></h2>
+    <p><small>NeAI のカーソル操作は ARM 後のみ有効です。停止すると未実行の操作は破棄されます。</small></p>
+    <input id="confirmation" aria-label="アーム確認" placeholder="ARM と入力してから有効化">
+    <button id="arm">NeAI 操作を有効化</button><button id="disarm" class="danger">停止・無効化</button>
+    <pre id="status"></pre>
+  </section>
+  <div class="grid">
+    <section>
+      <h2>NeAI への依頼</h2>
+      <p><small>自然文の依頼をキューに入れます。NeAI は共有画面を見ながら <code>GET /api/intents/next</code> で取得します。</small></p>
+      <textarea id="intent" placeholder="例: 今の画面でブラウザの検索欄を探してクリックしてください"></textarea>
+      <button id="send-intent">依頼を送る</button>
+    </section>
+    <section>
+      <h2>NeAI からの操作</h2>
+      <p><small>1 アクションずつ送る場合は <code>/api/actions</code>、複数まとめる場合は <code>/api/plans</code> です。</small></p>
+      <textarea id="plan" spellcheck="false">{
+  "action": {
+    "type": "click",
+    "x": 640,
+    "y": 450,
+    "button": "left"
+  }
+}</textarea>
+      <button id="send-action">1 アクション送信</button>
+    </section>
+  </div>
+  <section><h2>応答</h2><pre id="result">準備完了</pre></section>
+  <script>
+    const result = document.querySelector('#result');
+    const show = value => result.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    async function request(path, body) {
+      const response = await fetch(path, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); return data;
+    }
+    async function refreshStatus() {
+      const status = await (await fetch('/api/status')).json();
+      const label = document.querySelector('#armed'); label.textContent = status.armed ? 'ARMED' : 'DISARMED'; label.className = status.armed ? 'armed' : 'disarmed';
+      document.querySelector('#status').textContent = JSON.stringify(status, null, 2);
+    }
+    async function refreshSession() {
+      try {
+        const session = await (await fetch('/api/session?scale=0.5')).json();
+        document.querySelector('#screen').src = `/api/screen?scale=0.5&ts=${session.frameSeq}`;
+        const dot = document.querySelector('#cursor-dot');
+        const img = document.querySelector('#screen');
+        const placeCursor = () => {
+          const bounds = session.screen.bounds;
+          const x = ((session.cursor.x - bounds.left) / bounds.width) * img.clientWidth;
+          const y = ((session.cursor.y - bounds.top) / bounds.height) * img.clientHeight;
+          dot.style.left = `${x}px`; dot.style.top = `${y}px`; dot.hidden = false;
+        };
+        if (img.complete) placeCursor(); else img.onload = placeCursor;
+        document.querySelector('#session-meta').textContent = JSON.stringify({
+          frameSeq: session.frameSeq,
+          cursor: session.cursor,
+          screen: session.screen,
+          armed: session.armed
+        }, null, 2);
+      } catch (error) { show(error.message); }
+    }
+    document.querySelector('#arm').onclick = async () => { try { show(await request('/api/arm', {confirmation: document.querySelector('#confirmation').value})); await refreshStatus(); } catch (e) { show(e.message); } };
+    document.querySelector('#disarm').onclick = async () => { try { show(await request('/api/disarm', {})); await refreshStatus(); } catch (e) { show(e.message); } };
+    document.querySelector('#send-intent').onclick = async () => { try { show(await request('/api/intents', {text: document.querySelector('#intent').value})); } catch (e) { show(e.message); } };
+    document.querySelector('#send-action').onclick = async () => { try { show(await request('/api/actions', JSON.parse(document.querySelector('#plan').value))); await refreshStatus(); } catch (e) { show(e.message); } };
+    refreshStatus(); refreshSession(); setInterval(refreshStatus, 1000); setInterval(refreshSession, 700);
+  </script>
+</body>
+</html>
